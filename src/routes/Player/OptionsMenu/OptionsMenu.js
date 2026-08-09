@@ -9,6 +9,44 @@ const { default: usePlayOnDevice } = require('../usePlayOnDevice');
 const Option = require('./Option');
 const styles = require('./styles');
 
+const copyTextToClipboard = async (text) => {
+    // Modern Clipboard API.
+    //
+    // navigator.clipboard is only guaranteed to be available in a secure
+    // context, normally HTTPS or localhost.
+    if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+    }
+
+    // Fallback for self-hosted Stremio Web opened through plain HTTP,
+    // for example from a LAN address.
+    const textarea = document.createElement('textarea');
+
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '-9999px';
+    textarea.style.opacity = '0';
+
+    document.body.appendChild(textarea);
+
+    try {
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+
+        const copied = document.execCommand('copy');
+
+        if (!copied) {
+            throw new Error('Fallback clipboard copy failed');
+        }
+    } finally {
+        textarea.remove();
+    }
+};
+
 const OptionsMenu = React.memo(React.forwardRef(({ className, stream, playbackDevices, extraSubtitlesTracks, selectedExtraSubtitlesTrackId }, ref) => {
     const { t } = useTranslation();
     const platform = usePlatform();
@@ -34,50 +72,68 @@ const OptionsMenu = React.memo(React.forwardRef(({ className, stream, playbackDe
         return track?.fallbackUrl ?? track?.url ?? null;
     }, [extraSubtitlesTracks, selectedExtraSubtitlesTrackId]);
 
-    const onCopyStreamButtonClick = React.useCallback(() => {
-        if (streamingUrl || downloadUrl) {
-            navigator.clipboard.writeText(streamingUrl || downloadUrl)
-                .then(() => {
-                    toast.show({
-                        type: 'success',
-                        title: 'Copied',
-                        message: t('PLAYER_COPY_STREAM_SUCCESS'),
-                        timeout: 3000
-                    });
-                })
-                .catch((e) => {
-                    console.error(e);
-                    toast.show({
-                        type: 'error',
-                        title: t('ERROR'),
-                        message: `${t('PLAYER_COPY_STREAM_ERROR')}: ${streamingUrl || downloadUrl}`,
-                        timeout: 3000
-                    });
-                });
+    const onCopyStreamButtonClick = React.useCallback(async () => {
+        const url = streamingUrl || downloadUrl;
+
+        if (!url) {
+            return;
         }
-    }, [streamingUrl, downloadUrl]);
-    const onCopyMagnetButtonClick = React.useCallback(() => {
-        if (magnetUrl) {
-            navigator.clipboard.writeText(magnetUrl)
-                .then(() => {
-                    toast.show({
-                        type: 'success',
-                        title: 'Copied',
-                        message: t('PLAYER_COPY_MAGNET_LINK_SUCCESS'),
-                        timeout: 3000
-                    });
-                })
-                .catch((e) => {
-                    console.error(e);
-                    toast.show({
-                        type: 'error',
-                        title: t('Error'),
-                        message: `${t('PLAYER_COPY_MAGNET_LINK_ERROR')}: ${magnetUrl}`,
-                        timeout: 3000
-                    });
-                });
+
+        try {
+            await copyTextToClipboard(url);
+
+            toast.show({
+                type: 'success',
+                title: 'Copied',
+                message: t('PLAYER_COPY_STREAM_SUCCESS'),
+                timeout: 3000
+            });
+        } catch (e) {
+            console.error(e);
+
+            toast.show({
+                type: 'error',
+                title: t('ERROR'),
+                message: `${t('PLAYER_COPY_STREAM_ERROR')}: ${url}`,
+                timeout: 3000
+            });
+
+            // Last-resort fallback.
+            //
+            // This still lets the user manually copy the URL when the browser
+            // blocks both the modern Clipboard API and execCommand().
+            window.prompt('Copy stream link:', url);
         }
-    }, [magnetUrl]);
+    }, [streamingUrl, downloadUrl, toast, t]);
+
+    const onCopyMagnetButtonClick = React.useCallback(async () => {
+        if (!magnetUrl) {
+            return;
+        }
+
+        try {
+            await copyTextToClipboard(magnetUrl);
+
+            toast.show({
+                type: 'success',
+                title: 'Copied',
+                message: t('PLAYER_COPY_MAGNET_LINK_SUCCESS'),
+                timeout: 3000
+            });
+        } catch (e) {
+            console.error(e);
+
+            toast.show({
+                type: 'error',
+                title: t('ERROR'),
+                message: `${t('PLAYER_COPY_MAGNET_LINK_ERROR')}: ${magnetUrl}`,
+                timeout: 3000
+            });
+
+            window.prompt('Copy magnet link:', magnetUrl);
+        }
+    }, [magnetUrl, toast, t]);
+
     const onDownloadVideoButtonClick = React.useCallback(() => {
         if (downloadUrl) {
             platform.openExternal(downloadUrl);
