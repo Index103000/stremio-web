@@ -6,15 +6,19 @@ const INDEX_CACHE = 7200;
 const ASSETS_CACHE = 2629744;
 const HTTP_PORT = 8080;
 
-// Browser-facing path used by Stremio Web.
+// -----------------------------------------------------------------------------
+// Stremio Streaming Server proxy configuration
+// -----------------------------------------------------------------------------
 //
-// Example:
+// Browser-facing proxy path:
 //
-//   Browser:
-//   http://192.168.11.17:8081/stremio-server/settings
+//   http://<stremio-web>/stremio-server/...
 //
-//   Docker internal:
-//   http://stremio-server:11470/settings
+// Docker-internal target:
+//
+//   http://stremio-server:11470/...
+//
+// The browser never needs to access the Streaming Server container directly.
 //
 const STREMIO_SERVER_PROXY_PATH = '/stremio-server';
 
@@ -58,14 +62,38 @@ const app = express();
 //   http://stremio-server:11470/<info_hash>/<file>
 //   ...
 //
-// This gives Stremio Web and Stremio Streaming Server the same browser origin,
-// which avoids exposing port 11470 directly to the client.
+// Stremio Core may also generate stream URLs where:
+//
+//   Streaming Server URL:
+//     http://host/stremio-server/
+//
+//   Stream path:
+//     /yt/<id>
+//
+// are concatenated into:
+//
+//   /stremio-server//yt/<id>
+//
+// Therefore the proxy normalizes only the leading slash boundary of the
+// upstream path:
+//
+//   /stremio-server//yt/<id>
+//                     ↓
+//   //yt/<id>
+//                     ↓
+//   /yt/<id>
+//
+// This normalization is intentionally performed after removing the proxy
+// prefix. It does NOT normalize the complete URL and therefore cannot damage:
+//
+//   http://
+//   https://
 //
 app.use(
     createProxyMiddleware({
         target: STREMIO_SERVER_TARGET,
 
-        // The Docker service name is used as the upstream Host.
+        // Use the upstream target as the Host header.
         changeOrigin: true,
 
         // Preserve X-Forwarded-* information for the upstream server.
@@ -74,24 +102,32 @@ app.use(
         // Keep WebSocket proxying available in case Stremio Server uses it.
         ws: true,
 
-        // Only proxy requests under /stremio-server.
+        // Only proxy requests belonging to the Streaming Server prefix.
         pathFilter: (pathname) => (
             pathname === STREMIO_SERVER_PROXY_PATH ||
             pathname.startsWith(`${STREMIO_SERVER_PROXY_PATH}/`)
         ),
 
-        // Remove the browser-facing proxy prefix before forwarding.
+        // Remove the browser-facing /stremio-server prefix and normalize
+        // duplicate leading slashes before forwarding to Stremio Server.
         //
-        // /stremio-server/settings
-        //              ↓
-        // /settings
+        // Examples:
+        //
+        //   /stremio-server/settings
+        //       -> /settings
+        //
+        //   /stremio-server//yt/jGAJCAuV3pQ
+        //       -> /yt/jGAJCAuV3pQ
+        //
+        //   /stremio-server/
+        //       -> /
         //
         pathRewrite: (requestPath) => {
             const upstreamPath = requestPath.slice(
                 STREMIO_SERVER_PROXY_PATH.length
             );
 
-            return upstreamPath || '/';
+            return `/${upstreamPath.replace(/^\/+/, '')}`;
         },
 
         on: {
