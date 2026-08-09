@@ -27,7 +27,7 @@ RUN pnpm build
 # Setup server
 FROM base AS server
 
-RUN pnpm i express@4
+RUN pnpm i express@4 http-proxy-middleware@4
 
 # Finalize
 FROM base
@@ -37,4 +37,5 @@ COPY --from=server /var/www/stremio-web/node_modules /var/www/stremio-web/node_m
 COPY --from=app /var/www/stremio-web/build /var/www/stremio-web/build
 
 EXPOSE 8080
+
 CMD ["node", "http_server.js"]
