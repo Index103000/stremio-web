@@ -7,22 +7,60 @@ const ASSETS_CACHE = 2629744;
 const HTTP_PORT = 8080;
 
 // -----------------------------------------------------------------------------
-// Stremio Streaming Server proxy configuration
+// Stremio Streaming Server configuration
 // -----------------------------------------------------------------------------
 //
-// Browser-facing proxy path:
+// Stremio Web and Stremio Streaming Server share the same browser-facing
+// origin:
 //
-//   http://<stremio-web>/stremio-server/...
+//   http://<host>:8080/
 //
-// Docker-internal target:
+// Request resolution order:
 //
-//   http://stremio-server:11470/...
+//   1. Try to serve the request from Stremio Web's static build.
+//   2. If Stremio Web does not contain the requested resource, forward the
+//      request unchanged to Stremio Streaming Server.
+//   3. If Stremio Streaming Server does not recognize the request either,
+//      return its normal response, including its normal 404.
 //
-// The browser never needs to access the Streaming Server container directly.
+// Examples:
 //
-const STREMIO_SERVER_PROXY_PATH = '/stremio-server';
-
-// Docker-internal Stremio Streaming Server.
+//   /
+//       -> Stremio Web index.html
+//
+//   /main.<hash>.js
+//       -> Stremio Web static asset
+//
+//   /settings
+//       -> Stremio Streaming Server
+//
+//   /hlsv2/probe
+//       -> Stremio Streaming Server
+//
+//   /yt/<videoId>
+//       -> Stremio Streaming Server
+//
+//   /local-addon/manifest.json
+//       -> Stremio Streaming Server
+//
+// Stremio Web itself uses hash-based client-side routes:
+//
+//   /#/search
+//   /#/settings
+//   /#/player/...
+//
+// Everything after "#" is handled entirely by the browser and is never sent
+// to this HTTP server. Therefore:
+//
+//   /#/settings
+//
+// does not conflict with the Streaming Server endpoint:
+//
+//   /settings
+//
+// Docker-internal Stremio Streaming Server:
+//
+//   http://stremio-server:11470
 //
 // This can be overridden from Docker Compose:
 //
@@ -43,51 +81,143 @@ const index_path = path.join(build_path, 'index.html');
 const app = express();
 
 // -----------------------------------------------------------------------------
-// Stremio Streaming Server reverse proxy
+// HTTP request logging
 // -----------------------------------------------------------------------------
 //
-// Keep the Streaming Server hidden inside the Docker network.
+// Express does not log requests by default.
+//
+// Log every request after the response has completed so Docker logs contain:
+//
+//   method
+//   URL
+//   response status
+//   elapsed time
+//
+// Example:
+//
+//   [http] GET /settings -> 200 4ms
+//
+//   [http] GET /hlsv2/probe?mediaURL=... -> 200 16ms
+//
+// console.log() writes to stdout, therefore the logs are visible through:
+//
+//   docker logs stremio-web
+//
+// or:
+//
+//   docker logs -f stremio-web
+//
+app.use(
+    (req, res, next) => {
+        const startedAt = process.hrtime.bigint();
+
+        res.on(
+            'finish',
+            () => {
+                const elapsedNs =
+                    process.hrtime.bigint() - startedAt;
+
+                const elapsedMs =
+                    Number(elapsedNs) / 1_000_000;
+
+                console.log(
+                    `[http] ${req.method} ${req.originalUrl} -> ${res.statusCode} ${elapsedMs.toFixed(1)}ms`
+                );
+            }
+        );
+
+        next();
+    }
+);
+
+// -----------------------------------------------------------------------------
+// Stremio Web static files
+// -----------------------------------------------------------------------------
+//
+// express.static() falls through to the next middleware when the requested
+// resource does not exist.
+//
+// Therefore:
+//
+//   existing Web resource
+//       -> served here
+//
+//   unknown resource
+//       -> continue to Stremio Streaming Server fallback
+//
+app.use(
+    express.static(
+        build_path,
+        {
+            setHeaders: (res, filePath) => {
+                if (filePath === index_path) {
+                    res.set(
+                        'cache-control',
+                        `public, max-age: ${INDEX_CACHE}`
+                    );
+                } else {
+                    res.set(
+                        'cache-control',
+                        `public, max-age: ${ASSETS_CACHE}`
+                    );
+                }
+            },
+        }
+    )
+);
+
+// -----------------------------------------------------------------------------
+// Stremio Streaming Server fallback
+// -----------------------------------------------------------------------------
+//
+// Every request not handled by Stremio Web is forwarded unchanged to Stremio
+// Streaming Server.
+//
+// There is intentionally:
+//
+//   - no /stremio-server prefix;
+//   - no path whitelist;
+//   - no pathFilter;
+//   - no pathRewrite.
+//
+// This allows Stremio's normal assumption that the Streaming Server is mounted
+// at the root of an origin:
+//
+//   http://127.0.0.1:11470/
+//
+// to remain valid when using the self-hosted Web deployment.
+//
+// Examples:
 //
 // Browser:
 //
-//   /stremio-server/settings
-//   /stremio-server/<info_hash>/create
-//   /stremio-server/<info_hash>/<file>
-//   ...
+//   GET /settings
 //
-// becomes:
+// Upstream:
 //
-//   http://stremio-server:11470/settings
-//   http://stremio-server:11470/<info_hash>/create
-//   http://stremio-server:11470/<info_hash>/<file>
-//   ...
+//   GET http://stremio-server:11470/settings
 //
-// Stremio Core may also generate stream URLs where:
 //
-//   Streaming Server URL:
-//     http://host/stremio-server/
+// Browser:
 //
-//   Stream path:
-//     /yt/<id>
+//   GET /hlsv2/probe?mediaURL=...
 //
-// are concatenated into:
+// Upstream:
 //
-//   /stremio-server//yt/<id>
+//   GET http://stremio-server:11470/hlsv2/probe?mediaURL=...
 //
-// Therefore the proxy normalizes only the leading slash boundary of the
-// upstream path:
 //
-//   /stremio-server//yt/<id>
-//                     ↓
-//   //yt/<id>
-//                     ↓
-//   /yt/<id>
+// Browser:
 //
-// This normalization is intentionally performed after removing the proxy
-// prefix. It does NOT normalize the complete URL and therefore cannot damage:
+//   GET /yt/jGAJCAuV3pQ
 //
-//   http://
-//   https://
+// Upstream:
+//
+//   GET http://stremio-server:11470/yt/jGAJCAuV3pQ
+//
+//
+// Future Streaming Server endpoints also work automatically because this proxy
+// does not maintain a list of supported server paths.
 //
 app.use(
     createProxyMiddleware({
@@ -102,38 +232,32 @@ app.use(
         // Keep WebSocket proxying available in case Stremio Server uses it.
         ws: true,
 
-        // Only proxy requests belonging to the Streaming Server prefix.
-        pathFilter: (pathname) => (
-            pathname === STREMIO_SERVER_PROXY_PATH ||
-            pathname.startsWith(`${STREMIO_SERVER_PROXY_PATH}/`)
-        ),
-
-        // Remove the browser-facing /stremio-server prefix and normalize
-        // duplicate leading slashes before forwarding to Stremio Server.
-        //
-        // Examples:
-        //
-        //   /stremio-server/settings
-        //       -> /settings
-        //
-        //   /stremio-server//yt/jGAJCAuV3pQ
-        //       -> /yt/jGAJCAuV3pQ
-        //
-        //   /stremio-server/
-        //       -> /
-        //
-        pathRewrite: (requestPath) => {
-            const upstreamPath = requestPath.slice(
-                STREMIO_SERVER_PROXY_PATH.length
-            );
-
-            return `/${upstreamPath.replace(/^\/+/, '')}`;
-        },
-
         on: {
+            // -----------------------------------------------------------------
+            // Proxy request logging
+            // -----------------------------------------------------------------
+            //
+            // This is separate from the general [http] log above.
+            //
+            // It makes it immediately visible that Stremio Web did NOT contain
+            // the requested path and the request therefore fell through to the
+            // Streaming Server.
+            //
+            // Example:
+            //
+            //   [stremio-server-proxy]
+            //   GET /settings
+            //   -> http://stremio-server:11470/settings
+            //
+            proxyReq: (_proxyReq, req) => {
+                console.log(
+                    `[stremio-server-proxy] ${req.method} ${req.originalUrl} -> ${STREMIO_SERVER_TARGET}${req.originalUrl}`
+                );
+            },
+
             error: (error, req, res) => {
                 console.error(
-                    `[stremio-server-proxy] ${req.method} ${req.url}:`,
+                    `[stremio-server-proxy] ${req.method} ${req.originalUrl}:`,
                     error.message
                 );
 
@@ -158,7 +282,10 @@ app.use(
                     return;
                 }
 
-                if (res && typeof res.destroy === 'function') {
+                if (
+                    res &&
+                    typeof res.destroy === 'function'
+                ) {
                     res.destroy();
                 }
             },
@@ -166,45 +293,15 @@ app.use(
     })
 );
 
-// -----------------------------------------------------------------------------
-// Stremio Web static files
-// -----------------------------------------------------------------------------
-
-app.use(
-    express.static(
-        build_path,
-        {
-            setHeaders: (res, filePath) => {
-                if (filePath === index_path) {
-                    res.set(
-                        'cache-control',
-                        `public, max-age: ${INDEX_CACHE}`
-                    );
-                } else {
-                    res.set(
-                        'cache-control',
-                        `public, max-age: ${ASSETS_CACHE}`
-                    );
-                }
-            },
-        }
-    )
-);
-
-app.all(
-    '*',
-    (_req, res) => {
-        // TODO: better 404 page
-        res.status(404).send('<h1>404! Page not found</h1>');
-    }
-);
-
 app.listen(
     HTTP_PORT,
     () => {
-        console.info(`Server listening on port: ${HTTP_PORT}`);
         console.info(
-            `Stremio Server proxy: ${STREMIO_SERVER_PROXY_PATH}/ -> ${STREMIO_SERVER_TARGET}/`
+            `Server listening on port: ${HTTP_PORT}`
+        );
+
+        console.info(
+            `Stremio Server fallback: unmatched Web requests -> ${STREMIO_SERVER_TARGET}`
         );
     }
 );

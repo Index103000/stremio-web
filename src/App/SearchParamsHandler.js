@@ -13,30 +13,41 @@ const {
 } = require('stremio/common/CONSTANTS');
 
 // -----------------------------------------------------------------------------
-// Self-hosted Stremio Streaming Server proxy
+// Self-hosted Stremio Streaming Server
 // -----------------------------------------------------------------------------
 //
-// Stremio Core's default Streaming Server URL is:
+// Stremio Core's official default Streaming Server URL is:
 //
 //   http://127.0.0.1:11470/
 //
-// That is correct for the desktop application because the Streaming Server is
-// running locally on the same machine.
+// In this self-hosted deployment, Stremio Web and Stremio Streaming Server
+// share the same browser-facing origin:
 //
-// For the self-hosted Stremio Web deployment used by this fork, the Streaming
-// Server is instead exposed through the Stremio Web origin:
+//   http(s)://<stremio-web>/
 //
-//   http(s)://<stremio-web>/stremio-server/
+// http_server.js resolves requests in this order:
 //
-// http_server.js then proxies those requests internally to:
+//   1. Stremio Web static files.
+//   2. Stremio Streaming Server fallback.
 //
-//   http://stremio-server:11470/
+// Therefore the browser-facing Streaming Server URL is simply:
 //
-// The browser therefore never needs to know the Docker service name or connect
-// directly to port 11470.
+//   window.location.origin + "/"
 //
-const LOCAL_STREAMING_SERVER_PROXY_PATH = '/stremio-server/';
-
+// Examples:
+//
+//   http://192.168.11.17:8083/
+//
+//   https://stremio.example.com/
+//
+// This keeps Stremio's normal root-based Streaming Server URL behavior intact
+// and avoids path-prefix compatibility problems with endpoints such as:
+//
+//   /settings
+//   /hlsv2/...
+//   /yt/...
+//   /local-addon/...
+//
 const normalizeServerUrl = (url) => (
     String(url || '').replace(/\/+$/, '')
 );
@@ -45,9 +56,9 @@ const sameServerUrl = (left, right) => (
     normalizeServerUrl(left) === normalizeServerUrl(right)
 );
 
-const getLocalStreamingServerProxyUrl = () => (
+const getLocalStreamingServerUrl = () => (
     new URL(
-        LOCAL_STREAMING_SERVER_PROXY_PATH,
+        '/',
         window.location.origin
     ).toString()
 );
@@ -83,7 +94,8 @@ const SearchParamsHandler = () => {
     );
 
     const onLocationChange = () => {
-        const currentSearchParams = getSearchParams();
+        const currentSearchParams =
+            getSearchParams();
 
         setSearchParams(
             (previousSearchParams) => (
@@ -106,15 +118,12 @@ const SearchParamsHandler = () => {
             const currentStreamingServerUrl =
                 profile.settings.streamingServerUrl;
 
-            const localProxyUrl =
-                getLocalStreamingServerProxyUrl();
+            const localStreamingServerUrl =
+                getLocalStreamingServerUrl();
 
             // -----------------------------------------------------------------
             // Explicit URL always wins
             // -----------------------------------------------------------------
-            //
-            // Preserve Stremio's existing ?streamingServerUrl=... behavior.
-            //
             if (streamingServerUrl) {
                 if (
                     sameServerUrl(
@@ -154,15 +163,24 @@ const SearchParamsHandler = () => {
             }
 
             // -----------------------------------------------------------------
-            // Automatically migrate the official localhost default
+            // Already using the correct same-origin Streaming Server
             // -----------------------------------------------------------------
-            //
-            // Only replace Stremio's untouched default:
+            if (
+                sameServerUrl(
+                    currentStreamingServerUrl,
+                    localStreamingServerUrl
+                )
+            ) {
+                return;
+            }
+
+            // -----------------------------------------------------------------
+            // Automatically replace only Stremio's untouched official default
+            // -----------------------------------------------------------------
             //
             //   http://127.0.0.1:11470/
             //
-            // If the user has explicitly configured another Streaming Server,
-            // leave it untouched.
+            // Any other manually configured Streaming Server URL is preserved.
             //
             if (
                 !sameServerUrl(
@@ -173,20 +191,11 @@ const SearchParamsHandler = () => {
                 return;
             }
 
-            if (
-                sameServerUrl(
-                    currentStreamingServerUrl,
-                    localProxyUrl
-                )
-            ) {
-                return;
-            }
-
             core.transport.dispatch({
                 action: 'Ctx',
                 args: {
                     action: 'AddServerUrl',
-                    args: localProxyUrl,
+                    args: localStreamingServerUrl,
                 },
             });
 
@@ -196,7 +205,8 @@ const SearchParamsHandler = () => {
                     action: 'UpdateSettings',
                     args: {
                         ...profile.settings,
-                        streamingServerUrl: localProxyUrl,
+                        streamingServerUrl:
+                            localStreamingServerUrl,
                     },
                 },
             });
