@@ -3,7 +3,7 @@
 import React, { useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, ContextMenu } from 'stremio/components';
-import { languages, useToast } from 'stremio/common';
+import { copyTextToClipboard, languages, useToast } from 'stremio/common';
 import classNames from 'classnames';
 import Icon from '@stremio/stremio-icons/react';
 import styles from './SubtitleVariant.less';
@@ -47,10 +47,27 @@ const SubtitleVariant = ({ track, selected, onSelect }: Props) => {
         onSelect(track);
     }, [onSelect, track]);
 
-    const copyToClipboard = useCallback((value: string, successKey: string, errorKey: string) => {
-        navigator.clipboard.writeText(value)
-            .then(() => toast.show({ type: 'success', title: t(successKey), timeout: 4000 }))
-            .catch(() => toast.show({ type: 'error', title: t(errorKey), timeout: 4000 }));
+    const copyToClipboard = useCallback(async (
+        value: string,
+        successKey: string,
+        errorKey: string
+    ) => {
+        try {
+            await copyTextToClipboard(value);
+            toast.show({
+                type: 'success',
+                title: t(successKey),
+                timeout: 4000
+            });
+        } catch (e) {
+            console.error(e);
+            toast.show({
+                type: 'error',
+                title: t(errorKey),
+                timeout: 4000
+            });
+            window.prompt('Copy to clipboard:', value);
+        }
     }, [toast, t]);
 
     const onCopyUrlClick = useCallback(() => {

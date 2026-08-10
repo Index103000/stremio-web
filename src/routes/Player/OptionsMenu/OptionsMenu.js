@@ -4,48 +4,10 @@ const React = require('react');
 const PropTypes = require('prop-types');
 const classnames = require('classnames');
 const { useTranslation } = require('react-i18next');
-const { usePlatform, useToast } = require('stremio/common');
+const { usePlatform, useToast, copyTextToClipboard} = require('stremio/common');
 const { default: usePlayOnDevice } = require('../usePlayOnDevice');
 const Option = require('./Option');
 const styles = require('./styles');
-
-const copyTextToClipboard = async (text) => {
-    // Modern Clipboard API.
-    //
-    // navigator.clipboard is only guaranteed to be available in a secure
-    // context, normally HTTPS or localhost.
-    if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text);
-        return;
-    }
-
-    // Fallback for self-hosted Stremio Web opened through plain HTTP,
-    // for example from a LAN address.
-    const textarea = document.createElement('textarea');
-
-    textarea.value = text;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'fixed';
-    textarea.style.left = '-9999px';
-    textarea.style.top = '-9999px';
-    textarea.style.opacity = '0';
-
-    document.body.appendChild(textarea);
-
-    try {
-        textarea.focus();
-        textarea.select();
-        textarea.setSelectionRange(0, textarea.value.length);
-
-        const copied = document.execCommand('copy');
-
-        if (!copied) {
-            throw new Error('Fallback clipboard copy failed');
-        }
-    } finally {
-        textarea.remove();
-    }
-};
 
 const OptionsMenu = React.memo(React.forwardRef(({ className, stream, playbackDevices, extraSubtitlesTracks, selectedExtraSubtitlesTrackId }, ref) => {
     const { t } = useTranslation();

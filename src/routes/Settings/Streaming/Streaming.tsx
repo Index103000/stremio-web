@@ -2,7 +2,7 @@ import React, { forwardRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import Icon from '@stremio/stremio-icons/react';
 import { Button, MultiselectMenu } from 'stremio/components';
-import { useToast } from 'stremio/common';
+import { copyTextToClipboard, useToast } from 'stremio/common';
 import { Section, Option } from '../components';
 import URLsManager from './URLsManager';
 import useStreamingOptions from './useStreamingOptions';
@@ -25,17 +25,28 @@ const Streaming = forwardRef<HTMLDivElement, Props>(({ profile, streamingServer 
         transcodingProfileSelect,
     } = useStreamingOptions(streamingServer);
 
-    const onCopyRemoteUrl = useCallback(() => {
-        if (streamingServer.remoteUrl) {
-            navigator.clipboard.writeText(streamingServer.remoteUrl);
+    const onCopyRemoteUrl = useCallback(async () => {
+        if (!streamingServer.remoteUrl) {
+            return;
+        }
+
+        try {
+            await copyTextToClipboard(streamingServer.remoteUrl);
 
             toast.show({
                 type: 'success',
                 title: t('SETTINGS_REMOTE_URL_COPIED'),
                 timeout: 2500,
             });
+        } catch (e) {
+            console.error(e);
+
+            window.prompt(
+                'Copy remote URL:',
+                streamingServer.remoteUrl
+            );
         }
-    }, [streamingServer.remoteUrl]);
+    }, [streamingServer.remoteUrl, toast, t]);
 
     return (
         <Section ref={ref} label={'SETTINGS_NAV_STREAMING'}>
