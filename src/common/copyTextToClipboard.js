@@ -1,10 +1,27 @@
 // Copyright (C) 2017-2026 Smart code 203358507
 
 const copyTextToClipboard = async (text) => {
-    // Prefer the modern Clipboard API when available.
+    if (typeof text !== 'string') {
+        throw new TypeError('Clipboard text must be a string');
+    }
+
+    // -------------------------------------------------------------------------
+    // Modern Clipboard API
+    // -------------------------------------------------------------------------
     //
-    // navigator.clipboard.writeText() is generally only available in a
-    // secure context, such as HTTPS or localhost.
+    // This is the preferred implementation.
+    //
+    // navigator.clipboard.writeText() is normally available only in a secure
+    // context, such as:
+    //
+    //   https://example.com
+    //   http://localhost
+    //
+    // It may be unavailable when Stremio Web is opened from a LAN HTTP address,
+    // for example:
+    //
+    //   http://192.168.11.17:8083
+    //
     if (
         typeof navigator !== 'undefined' &&
         navigator.clipboard &&
@@ -15,12 +32,19 @@ const copyTextToClipboard = async (text) => {
         return;
     }
 
-    // Fallback for self-hosted Stremio Web opened through plain HTTP,
-    // for example:
+    // -------------------------------------------------------------------------
+    // Legacy fallback
+    // -------------------------------------------------------------------------
     //
-    //   http://192.168.11.17:8083
+    // document.execCommand('copy') is deprecated, but it is still useful as a
+    // compatibility fallback for browsers running in an insecure HTTP context.
     //
-    // In this environment navigator.clipboard may be unavailable.
+    // Instead of selecting text from a hidden textarea, intercept the actual
+    // browser-generated "copy" event and write the requested value directly to
+    // ClipboardEvent.clipboardData.
+    //
+    // This avoids several browser-specific problems with copying from hidden or
+    // invisible form controls.
     if (
         typeof document === 'undefined' ||
         typeof document.execCommand !== 'function'
@@ -28,29 +52,30 @@ const copyTextToClipboard = async (text) => {
         throw new Error('Clipboard API is unavailable');
     }
 
-    const textarea = document.createElement('textarea');
+    let copyEventHandled = false;
 
-    textarea.value = text;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'fixed';
-    textarea.style.left = '-9999px';
-    textarea.style.top = '-9999px';
-    textarea.style.opacity = '0';
+    const onCopy = (event) => {
+        if (!event.clipboardData) {
+            return;
+        }
 
-    document.body.appendChild(textarea);
+        event.clipboardData.clearData();
+        event.clipboardData.setData('text/plain', text);
+        event.preventDefault();
+
+        copyEventHandled = true;
+    };
+
+    document.addEventListener('copy', onCopy);
 
     try {
-        textarea.focus();
-        textarea.select();
-        textarea.setSelectionRange(0, textarea.value.length);
-
         const copied = document.execCommand('copy');
 
-        if (!copied) {
+        if (!copied || !copyEventHandled) {
             throw new Error('Fallback clipboard copy failed');
         }
     } finally {
-        textarea.remove();
+        document.removeEventListener('copy', onCopy);
     }
 };
 
