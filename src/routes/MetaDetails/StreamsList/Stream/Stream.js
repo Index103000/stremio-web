@@ -6,7 +6,7 @@ const classnames = require('classnames');
 const { default: Icon } = require('@stremio/stremio-icons/react');
 const { t } = require('i18next');
 const { useCore } = require('stremio/core');
-const { useProfile, usePlatform, useToast, useBinaryState, copyTextToClipboard} = require('stremio/common');
+const { useProfile, usePlatform, useToast, useBinaryState, copyTextToClipboard } = require('stremio/common');
 const { Button, Image, Popup } = require('stremio/components');
 const { default: useRouteFocused } = require('stremio/common/useRouteFocused');
 const StreamPlaceholder = require('./StreamPlaceholder');
@@ -29,28 +29,34 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
             }
         }
     }, [openMenu]);
+
     const popupLabelOnContextMenu = React.useCallback((event) => {
         if (!event.nativeEvent.togglePopupPrevented && !event.nativeEvent.ctrlKey && !event.nativeEvent.shiftKey) {
             event.preventDefault();
         }
     }, [toggleMenu]);
+
     const popupLabelOnLongPress = React.useCallback((event) => {
         if (event.nativeEvent.pointerType !== 'mouse' && !event.nativeEvent.togglePopupPrevented) {
             toggleMenu();
         }
     }, [toggleMenu]);
+
     const popupMenuOnPointerDown = React.useCallback((event) => {
         event.nativeEvent.togglePopupPrevented = true;
     }, []);
+
     const popupMenuOnContextMenu = React.useCallback((event) => {
         event.nativeEvent.togglePopupPrevented = true;
         if (!event.nativeEvent.ctrlKey && !event.nativeEvent.shiftKey) {
             event.preventDefault();
         }
     }, []);
+
     const popupMenuOnClick = React.useCallback((event) => {
         event.nativeEvent.togglePopupPrevented = true;
     }, []);
+
     const popupMenuOnKeyDown = React.useCallback((event) => {
         event.nativeEvent.buttonClickPrevented = true;
     }, []);
@@ -100,6 +106,44 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
         return deepLinks?.externalPlayer?.magnet;
     }, [deepLinks]);
 
+    // -------------------------------------------------------------------------
+    // BitTorrent / P2P playback policy
+    // -------------------------------------------------------------------------
+    //
+    // Torrent resources are still shown in the stream list so they can be used
+    // for resource discovery and their Magnet links can still be copied.
+    //
+    // Direct playback is intentionally disabled.
+    //
+    // Starting a torrent through Stremio Streaming Server creates a persistent
+    // torrent engine. Closing the Web player does not necessarily destroy that
+    // engine immediately, which may leave large background downloads consuming
+    // network traffic and system resources.
+    //
+    // Therefore:
+    //
+    //   - Torrent discovery remains available.
+    //   - Magnet copying remains available.
+    //   - Direct Torrent playback through Stremio Server is blocked.
+    //
+    // A Torrent stream always produces an externalPlayer.magnet deep link.
+    //
+    const isTorrent = typeof magnetLink === 'string' && magnetLink.length > 0;
+
+    // Do not expose a navigable href for Torrent resources.
+    //
+    // This is intentionally separate from the onClick guard below:
+    //
+    //   1. Removing href prevents native anchor navigation.
+    //   2. onClick prevents application-level playback handling.
+    //
+    // Together they provide two independent safeguards against accidentally
+    // starting a Stremio Server torrent engine.
+    //
+    const playableHref = isTorrent ? null : href;
+    const playableTarget = isTorrent ? null : target;
+    const playableDownload = isTorrent ? null : download;
+
     const markVideoAsWatched = React.useCallback(() => {
         if (typeof videoId === 'string') {
             core.transport.dispatch({
@@ -117,8 +161,36 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
             return;
         }
 
+        // ---------------------------------------------------------------------
+        // Block direct BitTorrent / P2P playback
+        // ---------------------------------------------------------------------
+        //
+        // Do this before:
+        //
+        //   - markVideoAsWatched()
+        //   - external-player handling
+        //   - props.onClick()
+        //
+        // so the Torrent resource never enters the normal playback flow.
+        //
+        if (isTorrent) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            toast.show({
+                type: 'alert',
+                icon: 'magnet-link',
+                title: 'BT / P2P 资源已禁止直接播放',
+                message: '为避免 Stremio Server 在后台持续下载并占用大量流量，请复制 Magnet 链接后使用 OpenList、115、aria2 等工具下载。',
+                timeout: 6000,
+            });
+
+            return;
+        }
+
         if (profile.settings.playerType !== null) {
             markVideoAsWatched();
+
             toast.show({
                 type: 'success',
                 title: 'Stream opened in external player',
@@ -129,16 +201,25 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
         if (typeof props.onClick === 'function') {
             props.onClick(event);
         }
-    }, [props.onClick, profile.settings, markVideoAsWatched]);
+    }, [
+        isTorrent,
+        props.onClick,
+        profile.settings,
+        markVideoAsWatched,
+        toast,
+    ]);
 
     const copyMagnetLink = React.useCallback(async (event) => {
         event.preventDefault();
         closeMenu();
+
         if (!magnetLink) {
             return;
         }
+
         try {
             await copyTextToClipboard(magnetLink);
+
             toast.show({
                 type: 'success',
                 title: t('PLAYER_COPY_MAGNET_LINK_SUCCESS'),
@@ -146,11 +227,13 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
             });
         } catch (e) {
             console.error(e);
+
             toast.show({
                 type: 'error',
                 title: t('PLAYER_COPY_MAGNET_LINK_ERROR'),
                 timeout: 4000,
             });
+
             window.prompt('Copy magnet link:', magnetLink);
         }
     }, [magnetLink, closeMenu, toast]);
@@ -158,11 +241,14 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
     const copyDownloadLink = React.useCallback(async (event) => {
         event.preventDefault();
         closeMenu();
+
         if (!downloadLink) {
             return;
         }
+
         try {
             await copyTextToClipboard(downloadLink);
+
             toast.show({
                 type: 'success',
                 title: t('PLAYER_COPY_DOWNLOAD_LINK_SUCCESS'),
@@ -170,11 +256,13 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
             });
         } catch (e) {
             console.error(e);
+
             toast.show({
                 type: 'error',
                 title: t('PLAYER_COPY_DOWNLOAD_LINK_ERROR'),
                 timeout: 4000,
             });
+
             window.prompt('Copy download link:', downloadLink);
         }
     }, [downloadLink, closeMenu, toast]);
@@ -182,11 +270,14 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
     const copyStreamLink = React.useCallback(async (event) => {
         event.preventDefault();
         closeMenu();
+
         if (!streamLink) {
             return;
         }
+
         try {
             await copyTextToClipboard(streamLink);
+
             toast.show({
                 type: 'success',
                 title: t('PLAYER_COPY_STREAM_SUCCESS'),
@@ -194,11 +285,13 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
             });
         } catch (e) {
             console.error(e);
+
             toast.show({
                 type: 'error',
                 title: t('PLAYER_COPY_STREAM_ERROR'),
                 timeout: 4000,
             });
+
             window.prompt('Copy stream link:', streamLink);
         }
     }, [streamLink, closeMenu, toast]);
@@ -209,7 +302,15 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
 
     const renderLabel = React.useMemo(() => function renderLabel({ className, children, ...props }) {
         return (
-            <Button className={classnames(className, styles['stream-container'])} title={addonName} href={href} target={target} download={download} onClick={onClick} {...props}>
+            <Button
+                className={classnames(className, styles['stream-container'])}
+                title={addonName}
+                href={playableHref}
+                target={playableTarget}
+                download={playableDownload}
+                onClick={onClick}
+                {...props}
+            >
                 <div className={styles['info-container']}>
                     {
                         typeof thumbnail === 'string' && thumbnail.length > 0 ?
@@ -236,47 +337,123 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
                             null
                     }
                 </div>
-                <div className={styles['description-container']} title={description}>{description}</div>
-                <Icon className={styles['icon']} name={'play'} />
+
+                <div className={styles['description-container']} title={description}>
+                    {description}
+                </div>
+
+                <Icon
+                    className={styles['icon']}
+                    name={isTorrent ? 'magnet-link' : 'play'}
+                />
+
                 {children}
             </Button>
         );
-    }, [thumbnail, progress, addonName, name, description, href, target, download, onClick]);
+    }, [
+        thumbnail,
+        progress,
+        addonName,
+        name,
+        description,
+        playableHref,
+        playableTarget,
+        playableDownload,
+        isTorrent,
+        onClick,
+    ]);
 
     const renderMenu = React.useMemo(() => function renderMenu() {
         return (
-            <div className={styles['context-menu-content']} onPointerDown={popupMenuOnPointerDown} onContextMenu={popupMenuOnContextMenu} onClick={popupMenuOnClick} onKeyDown={popupMenuOnKeyDown}>
+            <div
+                className={styles['context-menu-content']}
+                onPointerDown={popupMenuOnPointerDown}
+                onContextMenu={popupMenuOnContextMenu}
+                onClick={popupMenuOnClick}
+                onKeyDown={popupMenuOnKeyDown}
+            >
                 <div className={styles['context-menu-title']}>
                     {description}
                 </div>
-                <Button className={styles['context-menu-option-container']} title={t('CTX_PLAY')}>
-                    <Icon className={styles['menu-icon']} name={'play'} />
-                    <div className={styles['context-menu-option-label']}>{t('CTX_PLAY')}</div>
-                </Button>
+
+                {
+                    !isTorrent &&
+                        <Button
+                            className={styles['context-menu-option-container']}
+                            title={t('CTX_PLAY')}
+                        >
+                            <Icon
+                                className={styles['menu-icon']}
+                                name={'play'}
+                            />
+                            <div className={styles['context-menu-option-label']}>
+                                {t('CTX_PLAY')}
+                            </div>
+                        </Button>
+                }
+
                 {
                     streamLink &&
-                        <Button className={styles['context-menu-option-container']} title={t('CTX_COPY_STREAM_LINK')} onClick={copyStreamLink}>
-                            <Icon className={styles['menu-icon']} name={'link'} />
-                            <div className={styles['context-menu-option-label']}>{t('CTX_COPY_STREAM_LINK')}</div>
+                        <Button
+                            className={styles['context-menu-option-container']}
+                            title={t('CTX_COPY_STREAM_LINK')}
+                            onClick={copyStreamLink}
+                        >
+                            <Icon
+                                className={styles['menu-icon']}
+                                name={'link'}
+                            />
+                            <div className={styles['context-menu-option-label']}>
+                                {t('CTX_COPY_STREAM_LINK')}
+                            </div>
                         </Button>
                 }
+
                 {
                     magnetLink &&
-                        <Button className={styles['context-menu-option-container']} title={t('CTX_COPY_MAGNET_LINK')} onClick={copyMagnetLink}>
-                            <Icon className={styles['menu-icon']} name={'magnet-link'} />
-                            <div className={styles['context-menu-option-label']}>{t('CTX_COPY_MAGNET_LINK')}</div>
+                        <Button
+                            className={styles['context-menu-option-container']}
+                            title={t('CTX_COPY_MAGNET_LINK')}
+                            onClick={copyMagnetLink}
+                        >
+                            <Icon
+                                className={styles['menu-icon']}
+                                name={'magnet-link'}
+                            />
+                            <div className={styles['context-menu-option-label']}>
+                                {t('CTX_COPY_MAGNET_LINK')}
+                            </div>
                         </Button>
                 }
+
                 {
                     downloadLink &&
-                        <Button className={styles['context-menu-option-container']} title={t('CTX_DOWNLOAD_VIDEO')} onClick={copyDownloadLink}>
-                            <Icon className={styles['menu-icon']} name={'download'} />
-                            <div className={styles['context-menu-option-label']}>{t('CTX_COPY_VIDEO_DOWNLOAD_LINK')}</div>
+                        <Button
+                            className={styles['context-menu-option-container']}
+                            title={t('CTX_DOWNLOAD_VIDEO')}
+                            onClick={copyDownloadLink}
+                        >
+                            <Icon
+                                className={styles['menu-icon']}
+                                name={'download'}
+                            />
+                            <div className={styles['context-menu-option-label']}>
+                                {t('CTX_COPY_VIDEO_DOWNLOAD_LINK')}
+                            </div>
                         </Button>
                 }
             </div>
         );
-    }, [copyStreamLink, onClick]);
+    }, [
+        description,
+        isTorrent,
+        streamLink,
+        copyStreamLink,
+        magnetLink,
+        copyMagnetLink,
+        downloadLink,
+        copyDownloadLink,
+    ]);
 
     React.useEffect(() => {
         if (!routeFocused) {

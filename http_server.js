@@ -7,6 +7,63 @@ const ASSETS_CACHE = 2629744;
 const HTTP_PORT = 8080;
 
 // -----------------------------------------------------------------------------
+// Logging configuration
+// -----------------------------------------------------------------------------
+//
+// All application logs include a local timestamp:
+//
+//   [2026-08-13 10:38:05.123] [http] GET /settings -> 200 4.2ms
+//
+// The timezone can be configured through Docker / environment:
+//
+//   TZ=Asia/Shanghai
+//
+// If TZ is not configured, Asia/Shanghai is used as the default.
+//
+// The timestamp includes milliseconds because request/proxy diagnostics often
+// need to correlate events that happen within the same second.
+//
+const LOG_TIME_ZONE = process.env.TZ || 'Asia/Shanghai';
+
+const logTimeFormatter = new Intl.DateTimeFormat(
+    'sv-SE',
+    {
+        timeZone: LOG_TIME_ZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        fractionalSecondDigits: 3,
+        hour12: false,
+    }
+);
+
+const getLogTimestamp = () => {
+    return logTimeFormatter
+        .format(new Date())
+        .replace(',', '.');
+};
+
+const logger = {
+    info: (...args) => {
+        console.info(
+            `[${getLogTimestamp()}]`,
+            ...args
+        );
+    },
+
+    error: (...args) => {
+        console.error(
+            `[${getLogTimestamp()}]`,
+            ...args
+        );
+    },
+};
+
+
+// -----------------------------------------------------------------------------
 // Stremio Streaming Server configuration
 // -----------------------------------------------------------------------------
 //
@@ -80,6 +137,7 @@ const index_path = path.join(build_path, 'index.html');
 
 const app = express();
 
+
 // -----------------------------------------------------------------------------
 // HTTP request logging
 // -----------------------------------------------------------------------------
@@ -88,6 +146,7 @@ const app = express();
 //
 // Log every request after the response has completed so Docker logs contain:
 //
+//   timestamp
 //   method
 //   URL
 //   response status
@@ -95,11 +154,12 @@ const app = express();
 //
 // Example:
 //
-//   [http] GET /settings -> 200 4ms
+//   [2026-08-13 10:38:05.123] [http] GET /settings -> 200 4.2ms
 //
-//   [http] GET /hlsv2/probe?mediaURL=... -> 200 16ms
+//   [2026-08-13 10:38:06.482]
+//   [http] GET /hlsv2/probe?mediaURL=... -> 200 1358.4ms
 //
-// console.log() writes to stdout, therefore the logs are visible through:
+// Logs are written to stdout/stderr and are therefore visible through:
 //
 //   docker logs stremio-web
 //
@@ -120,7 +180,7 @@ app.use(
                 const elapsedMs =
                     Number(elapsedNs) / 1_000_000;
 
-                console.log(
+                logger.info(
                     `[http] ${req.method} ${req.originalUrl} -> ${res.statusCode} ${elapsedMs.toFixed(1)}ms`
                 );
             }
@@ -129,6 +189,7 @@ app.use(
         next();
     }
 );
+
 
 // -----------------------------------------------------------------------------
 // Stremio Web static files
@@ -165,6 +226,7 @@ app.use(
         }
     )
 );
+
 
 // -----------------------------------------------------------------------------
 // Stremio Streaming Server fallback
@@ -245,18 +307,19 @@ app.use(
             //
             // Example:
             //
+            //   [2026-08-13 10:38:05.120]
             //   [stremio-server-proxy]
             //   GET /settings
             //   -> http://stremio-server:11470/settings
             //
             proxyReq: (_proxyReq, req) => {
-                console.log(
+                logger.info(
                     `[stremio-server-proxy] ${req.method} ${req.originalUrl} -> ${STREMIO_SERVER_TARGET}${req.originalUrl}`
                 );
             },
 
             error: (error, req, res) => {
-                console.error(
+                logger.error(
                     `[stremio-server-proxy] ${req.method} ${req.originalUrl}:`,
                     error.message
                 );
@@ -293,14 +356,23 @@ app.use(
     })
 );
 
+
+// -----------------------------------------------------------------------------
+// Start HTTP server
+// -----------------------------------------------------------------------------
+
 app.listen(
     HTTP_PORT,
     () => {
-        console.info(
+        logger.info(
             `Server listening on port: ${HTTP_PORT}`
         );
 
-        console.info(
+        logger.info(
+            `Log timezone: ${LOG_TIME_ZONE}`
+        );
+
+        logger.info(
             `Stremio Server fallback: unmatched Web requests -> ${STREMIO_SERVER_TARGET}`
         );
     }
